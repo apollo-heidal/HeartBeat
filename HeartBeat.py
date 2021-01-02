@@ -5,8 +5,8 @@ Written by Apollo Heidal
 '''
 
 import asyncio
+from time import time
 from bleak.backends.bluezdbus.client import BleakClientBlueZDBus
-
 
 H10_MAC_ADDR = 'EA:ED:67:25:A1:03'
 CLIENT = BleakClientBlueZDBus(H10_MAC_ADDR)
@@ -38,7 +38,7 @@ def controlPointResponseHandler(sender, data):
         print("\t\tmeasurement settings")
     '''
 
-samples = []
+samples = dict()
 
 def dataResponseHandler(sender, data):
     '''
@@ -48,33 +48,50 @@ def dataResponseHandler(sender, data):
         [9] == 0x00 (ECG frameType; 3B uV)
         [10::3] == data frames
     '''
-    # double check correct packet format
+    # double check sender and correct packet format
     assert(sender == 0x49)
     assert(len(data[10:]) % 3 == 0)
 
-    print("data(len={:d}) from ".format(len(data)), end="")
-    if data[0] == 0x00:
-        print("ECG:")
-    elif data[0] == 0x02:
-        print("ACC:")
+    ## debug statements
+    # print("data(len={:d}) from ".format(len(data)), end="")
+    # if data[0] == 0x00:
+    #     print("ECG:")
+    # elif data[0] == 0x02:
+    #     print("ACC:")
 
-    timestamp = int.from_bytes(data[1:9], byteorder='little')
-    print("timestamp: {:d}".format(timestamp))
+    timestamp = int.from_bytes(data[1:9], byteorder='little') #nanoseconds
+    samples[timestamp] = []
+    ## print("timestamp: {:d}".format(timestamp))
 
     # ECG frames are 3B in little endian
     for frame in range(10, len(data[10:]) + 10, 3):
-        print("0x" + "".join("{:02x}".format(x) for x in data[frame:frame+3]), end=" ")
+        #print("0x" + "".join("{:02x}".format(x) for x in data[frame:frame+3]), end=" ")
         uV = int.from_bytes(data[frame:frame+3], byteorder="little", signed=True)
         # print(uV)
-        samples.append(str(uV))
+        samples[timestamp].append(uV)
 
-    #print(data)
-    # for uV in data[10::3]:
-    #     #print(uV, end=" ")
-    #     samples.append(str(uV))
-    # print("0x{:02x}:".format(len(data), sender), end="")
-    # print("".join(" {:02x}".format(x) for x in data), end="\n")
-    print()
+    # print(samples[timestamp])
+    # print()
+
+
+def formatAndSave():
+    times = sorted(samples.keys())
+    start_time = times[0] - (times[1] - times[0]) # approximate t0: t0 = t1 - (t2 - t1)
+    end_time = times[-1]
+
+    with open("samples.csv", "w") as fileHandler:
+        # iterate over all the timestamps
+        for t in range(1, len(times)):
+            # iterate through samples are approximate time based on timestamp[t-1] and timestamp[t]
+            this_packet = samples[times[t]]
+            for s in enumerate(this_packet):
+                if t == 1: #first packet
+                    s_time = ((times[t] - start_time) / len(this_packet)) * s[0]
+                    fileHandler.write("{:d},{:d}\n".format(int(s_time), s[1]))
+                else: #all other packets
+                    s_time = (((times[t] - times[t-1]) / len(this_packet)) * s[0]) + (times[t-1] - start_time)
+                    fileHandler.write("{:d},{:d}\n".format(int(s_time), s[1]))
+            #print("time diff: {:d}".format(times[t] - times[t-1]))
 
 
 async def main():
@@ -97,19 +114,17 @@ async def main():
     print("Start ECG data stream...")
     await CLIENT.write_gatt_char(PMD_CONTROL_POINT_CHAR_UUID, START_ECG_MEASUREMENT_OP_CODE)
     
-    await asyncio.sleep(10)
+    await asyncio.sleep(20)
 
     # request stop ecg stream
     await CLIENT.write_gatt_char(PMD_CONTROL_POINT_CHAR_UUID, STOP_ECG_MEASUREMENT_OP_CODE)
 
-    await asyncio.sleep(2)
+    await asyncio.sleep(1)
 
     if await CLIENT.is_connected():
         await CLIENT.disconnect()
 
-    with open('src/samples.csv', mode='w') as file:
-        for s in samples:
-            file.write("{:s}\n".format(s))
-
+    formatAndSave()
 
 asyncio.run(main())
+
